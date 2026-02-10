@@ -115,6 +115,7 @@
     .kb-row {
       display: flex;
       gap: 4px;
+      flex: 1;
     }
 
     /*
@@ -126,8 +127,9 @@
     .kb-row[data-row="3"] { margin-left: 48px; }
 
     .key {
-      width: 56px;
-      height: 58px;
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
       background: #1e1e32;
       border: 1px solid #2e2e44;
       border-radius: 6px;
@@ -139,12 +141,12 @@
       transition: background 0.04s, border-color 0.04s, box-shadow 0.04s;
     }
 
-    .key:hover { border-color: #555; }
+    .key:hover { filter: brightness(1.25); }
 
     .key.active {
-      background: #00e5ff1a;
-      border-color: #00e5ff;
-      box-shadow: 0 0 14px #00e5ff33;
+      filter: brightness(1.6);
+      border-color: #fff;
+      box-shadow: 0 0 14px rgba(255, 255, 255, 0.3);
     }
 
     .key .key-char {
@@ -207,6 +209,15 @@
       <div class="ctrl">
         <label>Volume</label>
         <input type="range" id="cfg-vol" min="-40" max="0" value="-12">
+      </div>
+      <div class="ctrl">
+        <label>Color</label>
+        <select id="cfg-color">
+          <option value="none">None</option>
+          <option value="hue">Hue Wheel</option>
+          <option value="palette">Palette</option>
+          <option value="warmcool">Warm / Cool</option>
+        </select>
       </div>
     </div>
   </header>
@@ -327,6 +338,90 @@ function noteName(frequency) {
   const name = NOTE_NAMES[((rounded % 12) + 12) % 12];
   const octave = Math.floor(rounded / 12) - 1;
   return name + octave;
+}
+
+// =============================================================================
+// COLOR SCHEMES
+//
+// All schemes derive color from a key's "step" (col * hStep + row * vStep).
+//   Hue Wheel:  pitch class (step % div) → hue, octave → lightness
+//   Palette:    12 handpicked hues for 12-EDO, falls back to hue wheel otherwise
+//   Warm/Cool:  linear map across full pitch range, red (low) → violet (high)
+// =============================================================================
+
+/** Compute the min and max step values across every key on the board. */
+function getStepRange() {
+  const c = cfg();
+  let min = Infinity, max = -Infinity;
+  ROWS.forEach((row, r) => {
+    row.forEach((_, col) => {
+      const s = col * c.h + r * c.v;
+      if (s < min) min = s;
+      if (s > max) max = s;
+    });
+  });
+  return { min, max };
+}
+
+// Handpicked hues for 12-EDO pitch classes (C through B).
+// Chosen for maximum perceptual distinction on a dark background.
+const PALETTE_HUES = [
+  0,    // C   — red
+  25,   // C#  — orange-red
+  45,   // D   — orange
+  55,   // D#  — gold
+  65,   // E   — yellow
+  120,  // F   — green
+  160,  // F#  — teal
+  185,  // G   — cyan
+  215,  // G#  — sky blue
+  245,  // A   — blue
+  275,  // A#  — purple
+  310,  // B   — magenta
+];
+
+/**
+ * Return a CSS background color for a key, or null for the default style.
+ * The color scheme is determined by the cfg-color dropdown.
+ */
+function keyColor(row, col) {
+  const mode = document.getElementById('cfg-color').value;
+  if (mode === 'none') return null;
+
+  const c = cfg();
+  const s = col * c.h + row * c.v;
+  const octave = Math.floor(s / c.div);
+  // Lightness: low octaves are dark, high octaves are lighter.
+  // Range ~22% to ~55%, stepping ~7% per octave.
+  const lightness = Math.min(Math.max(22 + octave * 7, 18), 55);
+
+  switch (mode) {
+    case 'hue': {
+      const posInOctave = ((s % c.div) + c.div) % c.div;
+      const hue = (posInOctave / c.div) * 360;
+      return `hsl(${hue}, 60%, ${lightness}%)`;
+    }
+
+    case 'palette': {
+      const posInOctave = ((s % c.div) + c.div) % c.div;
+      // Use handpicked hues for 12-EDO with integer positions; otherwise fall back
+      const hue = (c.div === 12 && Number.isInteger(posInOctave))
+        ? PALETTE_HUES[posInOctave]
+        : (posInOctave / c.div) * 360;
+      return `hsl(${hue}, 65%, ${lightness}%)`;
+    }
+
+    case 'warmcool': {
+      const range = getStepRange();
+      const span = range.max - range.min || 1;
+      // Map step linearly from 0 (red) to 270 (violet)
+      const t = (s - range.min) / span;
+      const hue = t * 270;
+      return `hsl(${hue}, 55%, 35%)`;
+    }
+  }
+
+  return null;
 }
 
 // =============================================================================
@@ -463,6 +558,10 @@ function renderKeyboard() {
       el.className = 'key';
       el.dataset.code = key.code;
 
+      // Apply color scheme (inline style; cleared for "none" mode)
+      const bg = keyColor(r, c);
+      if (bg) el.style.backgroundColor = bg;
+
       el.innerHTML =
         `<span class="key-char">${key.label}</span>` +
         (name ? `<span class="note-name">${name}</span>` : '') +
@@ -497,7 +596,7 @@ function liftKey(code) {
   setKeyActive(code, false);
 }
 
-/** Update note/freq labels without rebuilding the DOM. */
+/** Update note/freq labels and key colors without rebuilding the DOM. */
 function refreshLabels() {
   ROWS.forEach((row, r) => {
     row.forEach((key, c) => {
@@ -506,6 +605,10 @@ function refreshLabels() {
 
       const f    = freq(r, c);
       const name = noteName(f);
+
+      // Refresh color scheme
+      const bg = keyColor(r, c);
+      el.style.backgroundColor = bg || '';
 
       // Note name: insert, update, or remove
       let nameEl = el.querySelector('.note-name');
@@ -549,6 +652,7 @@ document.getElementById('cfg-hstep').addEventListener('input', refreshLabels);
 document.getElementById('cfg-vstep').addEventListener('input', refreshLabels);
 document.getElementById('cfg-div').addEventListener('input', refreshLabels);
 document.getElementById('cfg-voice').addEventListener('change', buildSynth);
+document.getElementById('cfg-color').addEventListener('change', refreshLabels);
 document.getElementById('cfg-vol').addEventListener('input', () => {
   if (volume) volume.volume.value = parseFloat(document.getElementById('cfg-vol').value);
 });
