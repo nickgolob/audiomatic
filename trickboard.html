@@ -102,6 +102,20 @@
 
     .ctrl input[type="range"] { width: 80px; }
 
+    .ctrl button {
+      background: #1a1a2e;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+
+    .ctrl button:hover { border-color: #00e5ff; }
+    .ctrl button:active { background: #2a2a4e; }
+
     /* --- Keyboard grid --- */
 
     #keyboard {
@@ -218,6 +232,20 @@
           <option value="palette">Palette</option>
           <option value="warmcool">Warm / Cool</option>
         </select>
+      </div>
+      <div class="ctrl">
+        <label>Preset</label>
+        <select id="preset-list">
+          <option value="">— none —</option>
+        </select>
+      </div>
+      <div class="ctrl">
+        <label>&nbsp;</label>
+        <button id="btn-save" title="Save current settings as a named preset">Save</button>
+      </div>
+      <div class="ctrl">
+        <label>&nbsp;</label>
+        <button id="btn-delete" title="Delete the selected preset">Delete</button>
       </div>
     </div>
   </header>
@@ -643,6 +671,106 @@ async function ensureAudio() {
   await Tone.start();
   buildSynth();
 }
+
+// =============================================================================
+// PRESETS — localStorage-backed named configurations
+//
+// Stored as a JSON object under a single localStorage key:
+//   { "preset name": { base: ..., hstep: ..., vstep: ..., div: ..., voice: ..., vol: ..., color: ... }, ... }
+// =============================================================================
+
+const STORAGE_KEY = 'qwertiano-presets';
+
+// All config input IDs, in one place to avoid duplication.
+const CONFIG_IDS = ['cfg-base', 'cfg-hstep', 'cfg-vstep', 'cfg-div', 'cfg-voice', 'cfg-vol', 'cfg-color'];
+
+/** Read all saved presets from localStorage. Returns {} if none exist. */
+function loadPresets() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+/** Write the full presets object back to localStorage. */
+function savePresets(presets) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
+}
+
+/** Snapshot current control values into a plain object. */
+function snapshotConfig() {
+  const snap = {};
+  CONFIG_IDS.forEach(id => { snap[id] = document.getElementById(id).value; });
+  return snap;
+}
+
+/** Apply a saved config snapshot to the controls and refresh the UI. */
+function applyConfig(snap) {
+  CONFIG_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el && snap[id] !== undefined) el.value = snap[id];
+  });
+  // Only rebuild synth / update volume if audio has started; otherwise the
+  // first keypress will pick up the new values via ensureAudio → buildSynth.
+  if (audioStarted) {
+    buildSynth();
+    if (volume) volume.volume.value = parseFloat(document.getElementById('cfg-vol').value);
+  }
+  refreshLabels();
+}
+
+/** Rebuild the <option> list in the preset dropdown. */
+function refreshPresetList(selectName) {
+  const sel = document.getElementById('preset-list');
+  sel.innerHTML = '<option value="">— none —</option>';
+  const presets = loadPresets();
+  Object.keys(presets).sort().forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  // Restore selection if a name was provided
+  if (selectName) sel.value = selectName;
+}
+
+// Save button: prompt for a name, store the current config
+document.getElementById('btn-save').addEventListener('click', () => {
+  const name = prompt('Preset name:');
+  if (!name) return;
+
+  const presets = loadPresets();
+  presets[name] = snapshotConfig();
+  savePresets(presets);
+  refreshPresetList(name);
+});
+
+// Delete button: remove the currently selected preset
+document.getElementById('btn-delete').addEventListener('click', () => {
+  const sel = document.getElementById('preset-list');
+  const name = sel.value;
+  if (!name) return;
+
+  const presets = loadPresets();
+  delete presets[name];
+  savePresets(presets);
+  refreshPresetList();
+});
+
+// Preset dropdown: load the selected preset
+document.getElementById('preset-list').addEventListener('change', () => {
+  const name = document.getElementById('preset-list').value;
+  if (!name) return;
+
+  const presets = loadPresets();
+  const snap = presets[name];
+  if (!snap) return;
+  applyConfig(snap);
+});
+
+// Populate the preset dropdown on page load
+refreshPresetList();
 
 renderKeyboard();
 
