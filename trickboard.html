@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  Qwertiano — Configurable microtonal QWERTY keyboard synthesizer.
+  Open this file directly in a browser. No server or build step needed.
+  Audio: Tone.js (https://tonejs.github.io/) loaded from CDN.
+
+  Layout: Full MacBook Pro keyboard mapped to a pitch grid.
+    Pitch ascends DOWN each column first, then RIGHT to the next column:
+      1(+0) q(+1) a(+2) z(+3) | 2(+4) w(+5) s(+6) x(+7) | 3(+8) ...
+    - Moving DOWN a row    = +vStep semitones (default 1)
+    - Moving RIGHT a column = +hStep semitones (default 4)
+    - All tuning params are configurable for microtonal experimentation.
+
+  Frequency formula:
+    freq = baseFreq * 2^((col * hStep + row * vStep) / divisionsPerOctave)
+-->
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Qwertiano</title>
+  <!-- Tone.js: Web Audio synthesis framework — https://tonejs.github.io/ -->
+  <script src="https://unpkg.com/tone"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0f0f1a;
+      color: #e0e0e0;
+      font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+      overflow: hidden;
+      height: 100vh;
+      user-select: none;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 16px 20px;
+    }
+
+    /* --- Controls panel --- */
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #2a2a3a;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 1.3rem;
+      color: #00e5ff;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    #controls {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .ctrl {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .ctrl label {
+      font-size: 0.6rem;
+      color: #777;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .ctrl input[type="number"],
+    .ctrl select {
+      background: #1a1a2e;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.8rem;
+      width: 85px;
+    }
+
+    .ctrl select { width: 115px; }
+
+    .ctrl input:focus,
+    .ctrl select:focus {
+      outline: none;
+      border-color: #00e5ff;
+    }
+
+    .ctrl input[type="range"] { width: 80px; }
+
+    /* --- Keyboard grid --- */
+
+    #keyboard {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    .kb-row {
+      display: flex;
+      gap: 4px;
+    }
+
+    /*
+     * Physical stagger to approximate real MacBook key offsets.
+     * Row 0 (number row) has no offset; each lower row shifts right.
+     */
+    .kb-row[data-row="1"] { margin-left: 24px; }
+    .kb-row[data-row="2"] { margin-left: 32px; }
+    .kb-row[data-row="3"] { margin-left: 48px; }
+
+    .key {
+      width: 56px;
+      height: 58px;
+      background: #1e1e32;
+      border: 1px solid #2e2e44;
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.04s, border-color 0.04s, box-shadow 0.04s;
+    }
+
+    .key:hover { border-color: #555; }
+
+    .key.active {
+      background: #00e5ff1a;
+      border-color: #00e5ff;
+      box-shadow: 0 0 14px #00e5ff33;
+    }
+
+    .key .key-char {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #bbb;
+      line-height: 1;
+    }
+
+    .key .note-name {
+      font-size: 0.55rem;
+      color: #00e5ff;
+      margin-top: 3px;
+      line-height: 1;
+    }
+
+    .key .freq-hz {
+      font-size: 0.45rem;
+      color: #555;
+      margin-top: 1px;
+      line-height: 1;
+    }
+  </style>
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <h1>Qwertiano</h1>
+    <div id="controls">
+      <div class="ctrl">
+        <label>Base Freq (Hz)</label>
+        <input type="number" id="cfg-base" value="130.81" step="0.01" min="20" max="8000">
+      </div>
+      <div class="ctrl">
+        <label>H Step</label>
+        <input type="number" id="cfg-hstep" value="4" step="0.1" min="0.01" max="24">
+      </div>
+      <div class="ctrl">
+        <label>V Step</label>
+        <input type="number" id="cfg-vstep" value="1" step="0.1" min="0.01" max="24">
+      </div>
+      <div class="ctrl">
+        <label>Div / Octave</label>
+        <input type="number" id="cfg-div" value="12" step="1" min="1" max="96">
+      </div>
+      <div class="ctrl">
+        <label>Voice</label>
+        <select id="cfg-voice">
+          <option value="square">Square</option>
+          <option value="sawtooth">Sawtooth</option>
+          <option value="triangle">Triangle</option>
+          <option value="sine">Sine</option>
+          <option value="fatsawtooth">Fat Saw</option>
+          <option value="fmsine">FM Sine</option>
+          <option value="fmsquare">FM Square</option>
+          <option value="amsine">AM Sine</option>
+        </select>
+      </div>
+      <div class="ctrl">
+        <label>Volume</label>
+        <input type="range" id="cfg-vol" min="-40" max="0" value="-12">
+      </div>
+    </div>
+  </header>
+
+  <div id="keyboard"></div>
+</div>
+
+<script>
+// =============================================================================
+// KEYBOARD LAYOUT
+//
+// Four rows of the MacBook Pro keyboard mapped to a pitch grid.
+// Pitch ascends DOWN each column first (1 → q → a → z), then RIGHT (+1 column).
+// Row 0 (number row) has the column roots. Row 3 (Z row) is +3 steps above.
+// =============================================================================
+
+const ROWS = [
+  // Row 0 — number row (lowest pitches)
+  [
+    { code: 'Digit1',       label: '1' },
+    { code: 'Digit2',       label: '2' },
+    { code: 'Digit3',       label: '3' },
+    { code: 'Digit4',       label: '4' },
+    { code: 'Digit5',       label: '5' },
+    { code: 'Digit6',       label: '6' },
+    { code: 'Digit7',       label: '7' },
+    { code: 'Digit8',       label: '8' },
+    { code: 'Digit9',       label: '9' },
+    { code: 'Digit0',       label: '0' },
+    { code: 'Minus',        label: '−' },
+    { code: 'Equal',        label: '=' },
+  ],
+  // Row 1 — QWERTY row
+  [
+    { code: 'KeyQ',         label: 'Q' },
+    { code: 'KeyW',         label: 'W' },
+    { code: 'KeyE',         label: 'E' },
+    { code: 'KeyR',         label: 'R' },
+    { code: 'KeyT',         label: 'T' },
+    { code: 'KeyY',         label: 'Y' },
+    { code: 'KeyU',         label: 'U' },
+    { code: 'KeyI',         label: 'I' },
+    { code: 'KeyO',         label: 'O' },
+    { code: 'KeyP',         label: 'P' },
+    { code: 'BracketLeft',  label: '[' },
+    { code: 'BracketRight', label: ']' },
+    { code: 'Backslash',    label: '\\' },
+  ],
+  // Row 2 — home row
+  [
+    { code: 'KeyA',         label: 'A' },
+    { code: 'KeyS',         label: 'S' },
+    { code: 'KeyD',         label: 'D' },
+    { code: 'KeyF',         label: 'F' },
+    { code: 'KeyG',         label: 'G' },
+    { code: 'KeyH',         label: 'H' },
+    { code: 'KeyJ',         label: 'J' },
+    { code: 'KeyK',         label: 'K' },
+    { code: 'KeyL',         label: 'L' },
+    { code: 'Semicolon',    label: ';' },
+    { code: 'Quote',        label: "'" },
+  ],
+  // Row 3 — bottom row (highest pitches)
+  [
+    { code: 'KeyZ',         label: 'Z' },
+    { code: 'KeyX',         label: 'X' },
+    { code: 'KeyC',         label: 'C' },
+    { code: 'KeyV',         label: 'V' },
+    { code: 'KeyB',         label: 'B' },
+    { code: 'KeyN',         label: 'N' },
+    { code: 'KeyM',         label: 'M' },
+    { code: 'Comma',        label: ',' },
+    { code: 'Period',       label: '.' },
+    { code: 'Slash',        label: '/' },
+  ],
+];
+
+// Quick lookup: key code → { row, col }
+const KEY_POS = new Map();
+ROWS.forEach((row, r) => row.forEach((k, c) => KEY_POS.set(k.code, { row: r, col: c })));
+
+// =============================================================================
+// TUNING
+// =============================================================================
+
+function cfg() {
+  return {
+    base: parseFloat(document.getElementById('cfg-base').value)  || 130.81,
+    h:    parseFloat(document.getElementById('cfg-hstep').value) || 1,
+    v:    parseFloat(document.getElementById('cfg-vstep').value) || 4,
+    div:  parseFloat(document.getElementById('cfg-div').value)   || 12,
+  };
+}
+
+/** Compute frequency for a grid position. */
+function freq(row, col) {
+  const c = cfg();
+  const step = col * c.h + row * c.v;
+  return c.base * Math.pow(2, step / c.div);
+}
+
+/**
+ * Derive a standard note name from a frequency, but ONLY when the current
+ * tuning is 12-EDO and the frequency lands on an integer MIDI note.
+ * Returns null otherwise.
+ */
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+function noteName(frequency) {
+  const c = cfg();
+  if (c.div !== 12) return null;
+
+  // MIDI note from frequency: n = 12 * log2(f / 440) + 69
+  const midi = 12 * Math.log2(frequency / 440) + 69;
+  const rounded = Math.round(midi);
+  if (Math.abs(midi - rounded) > 0.05) return null; // Not a standard pitch
+
+  const name = NOTE_NAMES[((rounded % 12) + 12) % 12];
+  const octave = Math.floor(rounded / 12) - 1;
+  return name + octave;
+}
+
+// =============================================================================
+// SYNTH
+// =============================================================================
+
+let synth  = null;
+let volume = null;
+
+// Tracks held keys. Maps key code → the frequency at the moment the key was
+// pressed. Storing the frequency ensures that if the user changes tuning
+// while a note is held, the release targets the correct voice.
+const activeKeys = new Map();
+
+function releaseAll() {
+  if (!synth) return;
+  for (const [code, f] of activeKeys) {
+    synth.triggerRelease(f);
+    setKeyActive(code, false);
+  }
+  activeKeys.clear();
+}
+
+function buildSynth() {
+  releaseAll();
+  if (synth) { synth.dispose(); synth = null; }
+
+  const voice = document.getElementById('cfg-voice').value;
+  const poly  = { maxPolyphony: 16 };
+  const env   = { attack: 0.008, decay: 0.1, sustain: 0.8, release: 0.25 };
+
+  switch (voice) {
+    case 'square':
+    case 'sawtooth':
+    case 'triangle':
+    case 'sine':
+      synth = new Tone.PolySynth(Tone.Synth, {
+        ...poly,
+        oscillator: { type: voice },
+        envelope: env,
+      });
+      break;
+
+    case 'fatsawtooth':
+      synth = new Tone.PolySynth(Tone.Synth, {
+        ...poly,
+        // "fat" oscillator stacks detuned copies for a thick chorus effect
+        oscillator: { type: 'fatsawtooth', spread: 20, count: 3 },
+        envelope: { ...env, attack: 0.015 },
+      });
+      break;
+
+    case 'fmsine':
+      synth = new Tone.PolySynth(Tone.FMSynth, {
+        ...poly,
+        envelope: { ...env, decay: 0.2, sustain: 0.6, release: 0.4 },
+      });
+      break;
+
+    case 'fmsquare':
+      synth = new Tone.PolySynth(Tone.FMSynth, {
+        ...poly,
+        oscillator: { type: 'square' },
+        envelope: { ...env, decay: 0.2, sustain: 0.6, release: 0.4 },
+      });
+      break;
+
+    case 'amsine':
+      synth = new Tone.PolySynth(Tone.AMSynth, {
+        ...poly,
+        envelope: { ...env, decay: 0.2, sustain: 0.6, release: 0.4 },
+      });
+      break;
+  }
+
+  if (!volume) {
+    volume = new Tone.Volume(
+      parseFloat(document.getElementById('cfg-vol').value)
+    ).toDestination();
+  }
+  synth.connect(volume);
+}
+
+// =============================================================================
+// KEY EVENTS
+// =============================================================================
+
+async function onKeyDown(e) {
+  if (activeKeys.has(e.code)) return;      // Already held (browser auto-repeat)
+  const pos = KEY_POS.get(e.code);
+  if (!pos) return;                        // Not a mapped key
+
+  e.preventDefault();
+  await ensureAudio();
+  const f = freq(pos.row, pos.col);
+  activeKeys.set(e.code, f);
+  synth.triggerAttack(f);
+  setKeyActive(e.code, true);
+}
+
+function onKeyUp(e) {
+  const f = activeKeys.get(e.code);
+  if (f === undefined) return;
+
+  e.preventDefault();
+  synth.triggerRelease(f);
+  activeKeys.delete(e.code);
+  setKeyActive(e.code, false);
+}
+
+function setKeyActive(code, on) {
+  const el = document.querySelector(`.key[data-code="${code}"]`);
+  if (el) el.classList.toggle('active', on);
+}
+
+// =============================================================================
+// RENDERING
+// =============================================================================
+
+function renderKeyboard() {
+  const kb = document.getElementById('keyboard');
+  kb.innerHTML = '';
+
+  ROWS.forEach((row, r) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'kb-row';
+    rowEl.dataset.row = r;
+
+    row.forEach((key, c) => {
+      const f    = freq(r, c);
+      const name = noteName(f);
+
+      const el = document.createElement('div');
+      el.className = 'key';
+      el.dataset.code = key.code;
+
+      el.innerHTML =
+        `<span class="key-char">${key.label}</span>` +
+        (name ? `<span class="note-name">${name}</span>` : '') +
+        `<span class="freq-hz">${f.toFixed(1)}</span>`;
+
+      // Mouse / touch support
+      el.addEventListener('mousedown', () => pressKey(key.code, r, c));
+      el.addEventListener('mouseup',   () => liftKey(key.code));
+      el.addEventListener('mouseleave',() => liftKey(key.code));
+
+      rowEl.appendChild(el);
+    });
+
+    kb.appendChild(rowEl);
+  });
+}
+
+async function pressKey(code, row, col) {
+  if (activeKeys.has(code)) return;
+  await ensureAudio();
+  const f = freq(row, col);
+  activeKeys.set(code, f);
+  synth.triggerAttack(f);
+  setKeyActive(code, true);
+}
+
+function liftKey(code) {
+  const f = activeKeys.get(code);
+  if (f === undefined) return;
+  synth.triggerRelease(f);
+  activeKeys.delete(code);
+  setKeyActive(code, false);
+}
+
+/** Update note/freq labels without rebuilding the DOM. */
+function refreshLabels() {
+  ROWS.forEach((row, r) => {
+    row.forEach((key, c) => {
+      const el = document.querySelector(`.key[data-code="${key.code}"]`);
+      if (!el) return;
+
+      const f    = freq(r, c);
+      const name = noteName(f);
+
+      // Note name: insert, update, or remove
+      let nameEl = el.querySelector('.note-name');
+      if (name) {
+        if (!nameEl) {
+          nameEl = document.createElement('span');
+          nameEl.className = 'note-name';
+          el.querySelector('.key-char').after(nameEl);
+        }
+        nameEl.textContent = name;
+      } else if (nameEl) {
+        nameEl.remove();
+      }
+
+      // Frequency
+      const hzEl = el.querySelector('.freq-hz');
+      if (hzEl) hzEl.textContent = f.toFixed(1);
+    });
+  });
+}
+
+// =============================================================================
+// INIT
+// =============================================================================
+
+// Audio context requires a user gesture before it can start. We initialize
+// lazily on the first keypress or click, then render the keyboard immediately.
+let audioStarted = false;
+async function ensureAudio() {
+  if (audioStarted) return;
+  audioStarted = true;
+  await Tone.start();
+  buildSynth();
+}
+
+renderKeyboard();
+
+// Config controls
+document.getElementById('cfg-base').addEventListener('input', refreshLabels);
+document.getElementById('cfg-hstep').addEventListener('input', refreshLabels);
+document.getElementById('cfg-vstep').addEventListener('input', refreshLabels);
+document.getElementById('cfg-div').addEventListener('input', refreshLabels);
+document.getElementById('cfg-voice').addEventListener('change', buildSynth);
+document.getElementById('cfg-vol').addEventListener('input', () => {
+  if (volume) volume.volume.value = parseFloat(document.getElementById('cfg-vol').value);
+});
+
+// Keyboard input (document-level so it works regardless of focus)
+document.addEventListener('keydown', onKeyDown);
+document.addEventListener('keyup', onKeyUp);
+
+// Release everything if the window loses focus
+window.addEventListener('blur', releaseAll);
+
+// Prevent keyboard events from triggering notes while typing in config inputs
+document.querySelectorAll('#controls input, #controls select').forEach(el => {
+  el.addEventListener('keydown', e => e.stopPropagation());
+  el.addEventListener('keyup',   e => e.stopPropagation());
+});
+</script>
+</body>
+</html>
